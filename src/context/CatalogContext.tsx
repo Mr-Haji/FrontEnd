@@ -124,7 +124,7 @@ const defaultCaseStudyContent: Descendant[] = [
 const CatalogContext = createContext<CatalogContextType | undefined>(undefined);
 
 export function CatalogProvider(props: { children: ReactNode }) {
-  const { viewport } = useIntelligenceViewport();
+  const { viewport,setViewport } = useIntelligenceViewport();
   const { authResponse } = useAuth();
   const { children } = props;
 
@@ -214,6 +214,7 @@ export function CatalogProvider(props: { children: ReactNode }) {
   const [currentStyle, setCurrentStyle] = useState('mapbox://styles/mapbox/streets-v11');
   const [sections, setSections] = useState<Section[] | PolygonData[]>([]);
   const [isDraftSaving, setIsDraftSaving] = useState(false);
+
 
   
   useEffect(() => {
@@ -525,29 +526,10 @@ export function CatalogProvider(props: { children: ReactNode }) {
       const updatedDataArray = (
         Array.isArray(unprocessedData) ? unprocessedData : [unprocessedData]
       ).map(function (layer) {
-        return Object.assign({}, layer, { display: true, isTemporary: false });
+        return Object.assign({}, layer, { display: true });
       });
       setGeoPoints(function (prevGeoPoints) {
-        const updatedGeoPoints = [...prevGeoPoints];
-
-        updatedDataArray.forEach(newLayer => {
-          const existingIndex = updatedGeoPoints.findIndex(
-            p => p.prdcer_lyr_id === newLayer.prdcer_lyr_id
-          );
-
-          if (existingIndex !== -1) {
-            updatedGeoPoints[existingIndex] = {
-              ...updatedGeoPoints[existingIndex],
-              ...newLayer,
-              display: updatedGeoPoints[existingIndex].display,
-              isTemporary: false,
-            };
-          } else {
-            updatedGeoPoints.push(newLayer);
-          }
-        });
-
-        return updatedGeoPoints as MapFeatures[];
+        return prevGeoPoints.concat(updatedDataArray) as MapFeatures[];
       });
 
       if (callBack && updatedDataArray[0].city_name)
@@ -563,39 +545,53 @@ export function CatalogProvider(props: { children: ReactNode }) {
     typeOfCard: string,
     callBack?: (city: string, country: string) => void
   ) {
-    setIsLoading(true);
+    fetchGeoPoints(id, typeOfCard, callBack);
+
     try {
-      await fetchGeoPoints(id, typeOfCard, callBack);
+      const body = { user_id: authResponse?.localId, ctlg_id: id };
 
-      // this is the reason for fetching singal catalog while user pressed on add layer.
-      if (typeOfCard === 'catalog') {
-        try {
-          const body = { user_id: authResponse?.localId, ctlg_id: id };
+      const res = await apiRequest({
+        url: urls.fetch_single_catalog,
+        method: 'post',
+        isAuthRequest: true,
+        body: body,
+      });
 
-          const res = await apiRequest({
-            url: urls.fetch_single_catalog,
-            method: 'post',
-            isAuthRequest: true,
-            body: body,
-          });
+      const catalogData = res.data.data;
+      console.log("=========>",catalogData)
+       const viewport = catalogData.intelligence_viewport;
 
-          const catalogData = res.data.data;
-          setMarkers(catalogData.display_elements?.annotations?.pins || []);
-          setMeasurements(catalogData.display_elements?.annotations?.routes || []);
-          setCaseStudyContent(catalogData.display_elements?.case_study || []);
-          setPolygons(catalogData.display_elements?.statisticsPopupData?.polygons || []);
-          setBenchmarks(catalogData.display_elements?.statisticsPopupData?.benchmarks || []);
-          setIsBenchmarkControlOpen(
-            catalogData.display_elements?.statisticsPopupData?.isBenchmarkControlOpen ?? false
-          );
-        } catch (error) {
-          console.error('Error fetching single catalog:', error);
-        }
-      }
+    if (viewport) {
+      // Update IntelligenceViewPortContext
+      setViewport({
+        bottom_lng: viewport.bottom_lng,
+        bottom_lat: viewport.bottom_lat,
+        top_lng: viewport.top_lng,
+        top_lat: viewport.top_lat,
+        population: viewport.population,
+        income: viewport.income,
+        zoom_level: viewport.zoom_level,
+      });
+
+      // // Auto-toggle layers based on saved values
+      // if (viewport.population) {
+      //   switchPopulationLayer(true);
+      // }
+
+      // if (viewport.income) {
+      //   switchIncomeLayer(tr);
+      // }
+    }
+      setMarkers(catalogData.display_elements?.annotations?.pins || []);
+      setMeasurements(catalogData.display_elements?.annotations?.routes || []);
+      setCaseStudyContent(catalogData.display_elements?.case_study || []);
+      setPolygons(catalogData.display_elements?.statisticsPopupData?.polygons || []);
+      setBenchmarks(catalogData.display_elements?.statisticsPopupData?.benchmarks || []);
+      setIsBenchmarkControlOpen(
+        catalogData.display_elements?.statisticsPopupData?.isBenchmarkControlOpen ?? false
+      );
     } catch (error) {
-      console.error('Error fetching geo points:', error);
-    } finally {
-      setIsLoading(false);
+      console.error('Error fetching single catalog:', error);
     }
   }
 
