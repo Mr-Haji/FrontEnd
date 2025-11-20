@@ -56,7 +56,7 @@ const getFakeData = async (zoomLevel: number) => {
 const LayerContext = createContext<LayerContextType | undefined>(undefined);
 
 export function LayerProvider(props: { children: ReactNode }) {
-   const { setViewport } = useIntelligenceViewport(); // get the shared state
+   const { setViewport, viewport } = useIntelligenceViewport(); // get the shared state
   const navigate = useNavigate();
   const { authResponse } = useAuth();
   const { children } = props;
@@ -133,8 +133,6 @@ export function LayerProvider(props: { children: ReactNode }) {
 
   const [includePopulation, setIncludePopulation] = useState(false);
   const [includeIncome, setIncludeIncome] = useState(false);
-
-  const [isLoadingDataset, setIsLoadingDataset] = useState(false);
 
   function incrementFormStage() {
     if (createLayerformStage === 'initial') {
@@ -228,18 +226,13 @@ export function LayerProvider(props: { children: ReactNode }) {
 
       const filteredPoints = prevPoints.filter(p => String(p.layerId) !== String(layerId));
       const newPoints = [...filteredPoints, newPoint];
-      console.log('data', data);
 
       if (data.next_page_token) {
-        // Disable fetching new page temporarily if there is a next page token
-        // fetchAllPagesForLayer(
-        //   layerId,
-        //   layerName,
-        //   data.next_page_token,
-        //   data.prdcer_lyr_id,
-        // ).catch((err) => {
-        //   console.error(`Error fetching page for layer ${layerId}:`, err);
-        // });
+        fetchAllPagesForLayer(layerId, layerName, data.next_page_token, data.prdcer_lyr_id).catch(
+          err => {
+            console.error(`Error fetching page for layer ${layerId}:`, err);
+          }
+        );
       } else {
         delete pageCountsRef.current[layerKey];
       }
@@ -294,7 +287,6 @@ export function LayerProvider(props: { children: ReactNode }) {
     customBody?: any
   ) {
     if (!pageToken && !layerId) {
-      setIsLoadingDataset(true);
       setGeoPoints(prev => prev.filter(p => isIntelligentLayer(p)));
       setLayerDataMap({});
     }
@@ -344,29 +336,29 @@ export function LayerProvider(props: { children: ReactNode }) {
         action: action,
       }));
       if (searchType !== 'keyword_search') {
-        // Process all layers and track completion
-        const layerPromises = layers.map(async layer => {
-          if (!layer) return;
-
-          // Skip if layer already processed
-          if (layerDataMap[layer.id]) {
-            return;
-          }
-
-          const defaultName = `${reqFetchDataset.selectedCountry} ${reqFetchDataset.selectedCity} ${
-            layer.includedTypes?.map(type => type.replace('_', ' ')).join(' + ') || ''
-          }${
-            layer.excludedTypes?.length > 0
-              ? ' + not ' + layer.excludedTypes.map(type => type.replace('_', ' ')).join(' + not ')
-              : ''
-          }`;
-
-          const prdcerLayerId = layerDataMapRef.current[layer.id]?.prdcer_lyr_id;
-          const payloadLayerId = pageToken
-            ? prevPrdcerLyrId || layerDataMapRef.current[layer.id]?.prdcer_lyr_id || ''
-            : '';
-
+        for (const layer of layers) {
           try {
+            if (!layer) continue;
+
+            if (layerDataMap[layer.id]) {
+              console.warn(`Layer ${layer.id} already processed, skipping...`);
+              continue;
+            }
+
+            const defaultName = `${reqFetchDataset.selectedCountry} ${reqFetchDataset.selectedCity} ${
+              layer.includedTypes?.map(type => type.replace('_', ' ')).join(' + ') || ''
+            }${
+              layer.excludedTypes?.length > 0
+                ? ' + not ' +
+                  layer.excludedTypes.map(type => type.replace('_', ' ')).join(' + not ')
+                : ''
+            }`;
+
+            const prdcerLayerId = layerDataMapRef.current[layer.id]?.prdcer_lyr_id;
+            const payloadLayerId = pageToken
+              ? prevPrdcerLyrId || layerDataMapRef.current[layer.id]?.prdcer_lyr_id || ''
+              : '';
+
             const res = await apiRequest({
               url: urls.fetch_dataset,
               method: 'post',
@@ -385,7 +377,6 @@ export function LayerProvider(props: { children: ReactNode }) {
               },
               isAuthRequest: true,
             });
-            console.log('res', res);
             if (res?.data?.data) {
               await assignPopularityCategory(res?.data?.data); //To be removed after fixed on backend
               setLayerDataMap(prev => ({
@@ -400,20 +391,12 @@ export function LayerProvider(props: { children: ReactNode }) {
             if (error?.response?.data?.detail === 'Insufficient balance in wallet') {
               resetFormStage();
               setShowErrorMessage(true);
-              throw error;
+              return;
             }
             setIsError(error instanceof Error ? error : new Error(String(error)));
+            // Re-throw to propagate it upward:
             throw error;
           }
-        });
-
-        // Wait for all layer requests to complete
-        try {
-          await Promise.all(layerPromises);
-          setIsLoadingDataset(false);
-        } catch (error) {
-          console.error('Error processing layers:', error);
-          throw error;
         }
       } else {
         let defaultName = `${reqFetchDataset.selectedCountry} ${reqFetchDataset.selectedCity} ${textSearchInput?.trim()}`;
@@ -550,16 +533,9 @@ export function LayerProvider(props: { children: ReactNode }) {
         }
       }
     } catch (error) {
-      console.error('handleFetchDataset error:', error);
       setIsError(error instanceof Error ? error : new Error(String(error)));
     } finally {
-      console.log('handleFetchDataset finally block - pageToken:', pageToken, 'layerId:', layerId);
       setShowLoaderTopup(false);
-      // Only clear loading state for initial requests (not pagination)
-      if (!pageToken && !layerId) {
-        console.log('Setting isLoadingDataset to false');
-        setIsLoadingDataset(false);
-      }
     }
   }
 
@@ -850,11 +826,25 @@ export function LayerProvider(props: { children: ReactNode }) {
     resetAreaIntelligence();
   }, [selectedContainerType]);
 
-  async function switchPopulationLayer() {
-    if (!includePopulation && includeIncome) handleIncomeLayer(false);
-    const shouldInclude = !includePopulation;
-    handlePopulationLayer(shouldInclude);
+async function switchPopulationLayer(forceState?: boolean) {
+  const shouldInclude = forceState !== undefined
+    ? forceState
+    : !includePopulation;
+
+  handlePopulationLayer(shouldInclude);
+}
+
+useEffect(() => {
+  if (!viewport) return;
+
+  if (viewport.population && !includePopulation) {
+    switchPopulationLayer(true);
   }
+
+  if (viewport.income && !includeIncome) {
+    switchIncomeLayer(true);
+  }
+}, [viewport]);
 
   async function refetchPopulationLayer() {
     await handlePopulationLayer(false);
@@ -1099,11 +1089,11 @@ export function LayerProvider(props: { children: ReactNode }) {
     [_handleIncomeLayer]
   );
 
-  async function switchIncomeLayer() {
-    if (!includeIncome && includePopulation) handlePopulationLayer(false);
-    const shouldInclude = !includeIncome;
-    handleIncomeLayer(shouldInclude);
-  }
+async function switchIncomeLayer(forceState?: boolean) {
+  const shouldInclude = forceState !== undefined ? forceState : !includeIncome;
+  handleIncomeLayer(shouldInclude);
+}
+
 
   async function refetchIncomeLayer() {
     await handleIncomeLayer(false);
@@ -1126,25 +1116,20 @@ export function LayerProvider(props: { children: ReactNode }) {
     if (event) event.preventDefault();
 
     const result = validateFetchDatasetForm();
+
     if (result === true) {
       if (action === 'full data') {
         setCentralizeOnce(true);
       }
-      // will be moved to the
-      // setShowLoaderTopup(true);
-      // incrementFormStage();
+      setShowLoaderTopup(true);
       handleFetchDataset(action);
+      incrementFormStage();
       return true;
     } else if (result instanceof Error) {
       return result;
     }
     return false;
   };
-
-  function handleFullDataFetchSuccess() {
-    setShowLoaderTopup(true);
-    incrementFormStage();
-  }
 
   function calculateInsights(features: any) {
     if (features.length === 0) return null;
@@ -1233,6 +1218,7 @@ export function LayerProvider(props: { children: ReactNode }) {
     };
   }
 
+
   return (
     <LayerContext.Provider
       value={{
@@ -1311,9 +1297,6 @@ export function LayerProvider(props: { children: ReactNode }) {
         refetchIncomeLayer,
         handleSubmitFetchDataset,
         currentViewportInsights,
-        handleFullDataFetchSuccess,
-        isLoadingDataset,
-        setIsLoadingDataset,
       }}
     >
       {children}
